@@ -20,11 +20,17 @@ features in that list.
 
 | Concern | Choice |
 |---|---|
-| TUI | `charmbracelet/bubbletea`, `bubbles` (table, viewport, textinput), `lipgloss` |
-| Config | TOML via `BurntSushi/toml` |
-| Syscalls | `golang.org/x/sys/unix` (`pidfd_open`, `pidfd_send_signal`) |
-| Tests | stdlib `testing`, fixture trees, `teatest` for UI goldens |
-| Release | `goreleaser`, static binary (`CGO_ENABLED=0`) |
+| TUI | standard library only: raw mode via `ioctl`, ANSI rendering, own key decoder (`internal/term`, `internal/ui`) |
+| Config | the small TOML subset the config needs, parsed in `internal/config` |
+| Syscalls | `syscall` (`pidfd_open`, `pidfd_send_signal` by number) |
+| Tests | stdlib `testing`, fixture trees, model-driven UI tests (keys in, rendered screen out) |
+| Release | static binary (`CGO_ENABLED=0`); packaging not set up yet |
+
+The first implementation has **no third-party dependencies**. The original
+choice was Bubble Tea, Lip Gloss and `BurntSushi/toml`, but the build
+environment could not download modules. The standard library covers what
+reclaim needs. Moving to Bubble Tea later only touches `internal/term` and
+`internal/ui`.
 
 Minimum kernel: 5.3 (pidfd), PSI enabled (`CONFIG_PSI`, sometimes `psi=1`).
 Optional: 5.14 for `cgroup.kill`. Each missing feature is detected at startup
@@ -50,7 +56,10 @@ internal/protect/       config load, default protected set, matchers (F8)
 internal/action/        estimate, warnings, terminate, freeze/thaw, frozen registry (F5–F7)
 internal/suggest/       command builders + shell quoting (F9–F11)
 internal/clipboard/     OSC 52 with tmux/screen passthrough (F12)
-internal/ui/            bubbletea model: views, panels, dialogs, keymap
+internal/ui/            model (keys/messages in, screen out), views, dialogs; app loop
+internal/term/          raw mode, alternate screen, key decoding, resize
+internal/config/        config file and defaults
+internal/resolve/       optional read-only name lookups (podman, docker, kubectl)
 ```
 
 Everything under `procfs`/`cgroupfs` takes a root `fs.FS` (or a base path), so
@@ -327,6 +336,10 @@ Each one ends with something usable and tested.
 M0–M5 make up a safe, read-only release, which could be tagged `v0.1.0-alpha`.
 Direct actions arrive in M6–M8.
 
+**Status (first implementation):** M0–M8 are implemented. From M9, only the
+README is done; the man page and release packaging are still to do. The
+growth annotation from the open question below is implemented as recommended.
+
 ## Testing strategy
 
 - **Parsers:** golden fixtures captured from real hosts (Fedora/GNOME,
@@ -336,7 +349,8 @@ Direct actions arrive in M6–M8.
   tables.
 - **Actions:** real child processes in tests, with a dedicated test cgroup when
   `systemd-run --user --scope` is available.
-- **UI:** `teatest` golden output for each view and dialog.
+- **UI:** the model is driven by keys and fake snapshots, and the rendered
+  screen is checked; dialogs are checked to fit small terminals.
 - **Safety invariants as tests:** PID 1 is never signalled, a protected group
   needs an override, a stale `(pid, starttime)` is refused, and the dialog
   defaults to Cancel.
