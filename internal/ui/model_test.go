@@ -82,7 +82,7 @@ func (f *fakeSnap) sample() (*model.Snapshot, error) {
 	f.time = f.time.Add(15 * time.Second)
 	mk := func(pid, ppid int, comm, cg string, uss uint64) *model.Process {
 		return &model.Process{PID: pid, PPID: ppid, Comm: comm, Cgroup: cg, StartTime: uint64(pid), Readable: true,
-			Mem: model.Mem{USS: uss, PSS: uss + 1<<20, RSS: uss + 10<<20}}
+			Mem: model.Mem{USS: uss, PSS: uss + 1<<20, RSS: uss + 10<<20, Used: uss}}
 	}
 	user := "/user.slice/user-1000.slice/user@1000.service/app.slice/"
 	procs := []*model.Process{
@@ -353,5 +353,36 @@ func TestWrapAndSize(t *testing.T) {
 	}
 	if sparkline([]uint64{1, 2, 3}, 10) != "▁▄█" {
 		t.Fatal(sparkline([]uint64{1, 2, 3}, 10))
+	}
+}
+
+func TestUsedPercentMapsToGroups(t *testing.T) {
+	f := &fakeSnap{time: time.Now()}
+	m := newModel(t, f.sample)
+	drive(t, m, m.Init())
+	s := screen(m)
+	// 16G total, 2G available: 88% used, split into the top-level groups.
+	for _, want := range []string{"RAM 88% used (14G of 16G)", "RAM%", "sort ram%", "█ machine-qemu-1-win11 25%", "█ code 9.3%", "· available 12%"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("screen lacks %q:\n%s", want, s)
+		}
+	}
+	// Default sort is the share of used RAM: the VM (4G) comes first.
+	if m.rows[0].g.Name != "machine-qemu-1-win11" {
+		t.Fatalf("first row %q", m.rows[0].g.Name)
+	}
+	keys(t, m, "m")
+	s = screen(m)
+	if !strings.Contains(s, "Why RAM is 88% used") || !strings.Contains(s, "rest") {
+		t.Fatalf("memory screen:\n%s", s)
+	}
+}
+
+func TestPct(t *testing.T) {
+	cases := map[[2]uint64]string{{0, 10}: "0%", {1, 10000}: "<0.1%", {42, 1000}: "4.2%", {600, 1000}: "60%", {1, 0}: "?"}
+	for in, want := range cases {
+		if got := pct(in[0], in[1]); got != want {
+			t.Errorf("pct(%d, %d) = %s, want %s", in[0], in[1], got, want)
+		}
 	}
 }

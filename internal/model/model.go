@@ -17,6 +17,14 @@ type Mem struct {
 	SwapPSS uint64 `json:"swap_pss"`
 	RSS     uint64 `json:"rss"` // shown for familiarity, never used in estimates
 
+	// Used is this process's share of "used" RAM, the number free(1) and
+	// system monitors report: anonymous plus shared-memory PSS. File-backed
+	// pages are page cache, which those tools count as available. Summed
+	// over processes it doesn't double count, so groups' shares of MemTotal
+	// add up. UsedShmem is the shared-memory part of Used.
+	Used      uint64 `json:"used"`
+	UsedShmem uint64 `json:"used_shmem"`
+
 	// Unreadable counts processes whose smaps_rollup could not be read.
 	// Their USS/PSS/Shared/SwapPSS are missing from the sums above.
 	Unreadable int `json:"unreadable,omitempty"`
@@ -30,6 +38,8 @@ func (m *Mem) Add(o Mem) {
 	m.Swap += o.Swap
 	m.SwapPSS += o.SwapPSS
 	m.RSS += o.RSS
+	m.Used += o.Used
+	m.UsedShmem += o.UsedShmem
 	m.Unreadable += o.Unreadable
 }
 

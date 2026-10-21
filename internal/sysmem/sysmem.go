@@ -3,6 +3,9 @@
 package sysmem
 
 import (
+	"fmt"
+	"sort"
+
 	"github.com/clobrano/reclaim/internal/model"
 	"github.com/clobrano/reclaim/internal/procfs"
 )
@@ -183,4 +186,116 @@ func Summarize(m procfs.Meminfo) Summary {
 		SwapTotal: m["SwapTotal"],
 		SwapUsed:  sub(m["SwapTotal"], m["SwapFree"]),
 	}
+}
+
+// PartKind says what a slice of used memory is.
+type PartKind string
+
+const (
+	PartGroup  PartKind = "group"
+	PartOthers PartKind = "other-groups"
+	PartKernel PartKind = "kernel"
+	PartTmpfs  PartKind = "tmpfs"
+	PartZram   PartKind = "zram"
+	PartHuge   PartKind = "hugepages"
+	PartRest   PartKind = "rest"
+)
+
+// Part is one slice of used memory.
+type Part struct {
+	Name    string   `json:"name"`
+	Kind    PartKind `json:"kind"`
+	Bytes   uint64   `json:"bytes"`
+	GroupID string   `json:"group_id,omitempty"`
+}
+
+// GroupUse is a group's share of used memory, as input to ExplainUsed.
+type GroupUse struct {
+	ID, Name string
+	Used     uint64 // anonymous + shmem PSS
+	Shmem    uint64 // the shmem part of Used
+}
+
+// partText explains the non-group parts.
+var partText = map[PartKind]string{
+	PartKernel: "Kernel memory that can't be dropped: unreclaimable slab, page tables, kernel stacks, per-CPU data.",
+	PartTmpfs:  "Files in tmpfs (/tmp, /dev/shm, /run) and shared memory no running process maps. Freed by deleting the files.",
+	PartZram:   "RAM holding compressed swap.",
+	PartHuge:   "Huge pages reserved by vm.nr_hugepages, in use or not.",
+	PartRest:   "The remainder: page cache the kernel won't drop yet (recently used or dirty), its reserve, and memory no process owns, such as GPU and driver buffers.",
+}
+
+// PartText explains a non-group part.
+func PartText(k PartKind) string { return partText[k] }
+
+// ExplainUsed splits "used" memory (MemTotal − MemAvailable, the number
+// system monitors show as a percentage) into the given groups and the rest.
+// Groups must be disjoint, such as the top level of a view. The topN largest
+// groups get their own part; the others are summed. The parts add up to
+// exactly the used figure: what the groups and kernel counters don't cover
+// lands in the "rest" part, and if they over-cover it (resident sizes of
+// unreadable processes count shared pages in full), the group parts are
+// scaled down to fit.
+func ExplainUsed(m procfs.Meminfo, zram []model.Zram, groups []GroupUse, topN int) []Part {
+	used := Summarize(m).Used
+	sorted := append([]GroupUse(nil), groups...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Used > sorted[j].Used })
+
+	var zramUsed, procShmem, procUsed uint64
+	for _, z := range zram {
+		zramUsed += z.MemUsed
+	}
+	for _, g := range sorted {
+		procShmem += g.Shmem
+		procUsed += g.Used
+	}
+	fixed := []Part{
+		{Name: "kernel", Kind: PartKernel, Bytes: m["SUnreclaim"] + m["PageTables"] + m["SecPageTables"] + m["KernelStack"] + m["Percpu"]},
+		{Name: "tmpfs & unmapped shmem", Kind: PartTmpfs, Bytes: sub(m["Shmem"], procShmem)},
+		{Name: "zram", Kind: PartZram, Bytes: zramUsed},
+		{Name: "hugepages", Kind: PartHuge, Bytes: m["HugePages_Total"] * m["Hugepagesize"]},
+	}
+	var fixedSum uint64
+	for _, p := range fixed {
+		fixedSum += p.Bytes
+	}
+	// Scale group parts down if, with the fixed parts, they exceed used.
+	room := sub(used, fixedSum)
+	scale := 1.0
+	if procUsed > room && procUsed > 0 {
+		scale = float64(room) / float64(procUsed)
+	}
+	var parts []Part
+	var others uint64
+	nOthers := 0
+	for i, g := range sorted {
+		b := uint64(float64(g.Used) * scale)
+		if b == 0 {
+			continue
+		}
+		if i < topN {
+			parts = append(parts, Part{Name: g.Name, Kind: PartGroup, Bytes: b, GroupID: g.ID})
+			continue
+		}
+		others += b
+		nOthers++
+	}
+	if nOthers > 0 {
+		parts = append(parts, Part{Name: fmt.Sprintf("%d other groups", nOthers), Kind: PartOthers, Bytes: others})
+	}
+	var sum uint64
+	for _, p := range parts {
+		sum += p.Bytes
+	}
+	for _, p := range fixed {
+		if p.Bytes > 0 && sum < used {
+			p.Bytes = min(p.Bytes, used-sum)
+			parts = append(parts, p)
+			sum += p.Bytes
+		}
+	}
+	if rest := sub(used, sum); rest > 0 {
+		parts = append(parts, Part{Name: "rest", Kind: PartRest, Bytes: rest})
+	}
+	return parts
 }

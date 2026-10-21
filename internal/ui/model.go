@@ -70,7 +70,8 @@ const (
 type sortKey int
 
 const (
-	sortUSS sortKey = iota
+	sortUsed sortKey = iota // share of used RAM
+	sortUSS
 	sortPSS
 	sortSwap
 	sortGrowth
@@ -80,7 +81,7 @@ const (
 )
 
 func (s sortKey) String() string {
-	return [...]string{"uss", "pss", "swap", "growth", "psi", "name"}[s]
+	return [...]string{"ram%", "uss", "pss", "swap", "growth", "psi", "name"}[s]
 }
 
 type row struct {
@@ -333,6 +334,8 @@ func (m *Model) trend(g *model.Group) (history.Trend, bool) {
 func (m *Model) sortGroups(gs []*model.Group) {
 	key := func(g *model.Group) float64 {
 		switch m.sort {
+		case sortUsed:
+			return float64(g.Mem.Used)
 		case sortPSS:
 			return float64(g.Mem.PSS)
 		case sortSwap:
