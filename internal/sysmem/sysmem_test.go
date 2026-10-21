@@ -66,3 +66,65 @@ func TestSummarize(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 }
+
+func sumParts(ps []Part) uint64 {
+	var s uint64
+	for _, p := range ps {
+		s += p.Bytes
+	}
+	return s
+}
+
+func TestExplainUsed(t *testing.T) {
+	m := meminfo() // 32G total, 9G available: 23G used
+	groups := []GroupUse{
+		{ID: "a", Name: "code", Used: 6 * gib},
+		{ID: "b", Name: "kind", Used: 5 * gib, Shmem: gib / 2},
+		{ID: "c", Name: "firefox", Used: 3 * gib},
+		{ID: "d", Name: "slack", Used: gib},
+		{ID: "e", Name: "tiny", Used: gib / 2},
+	}
+	parts := ExplainUsed(m, []model.Zram{{MemUsed: gib}}, groups, 3)
+	if got := sumParts(parts); got != 23*gib {
+		t.Fatalf("parts sum to %d, want %d: %+v", got, 23*gib, parts)
+	}
+	want := []struct {
+		name string
+		kind PartKind
+	}{
+		{"code", PartGroup}, {"kind", PartGroup}, {"firefox", PartGroup},
+		{"2 other groups", PartOthers}, {"kernel", PartKernel},
+		{"tmpfs & unmapped shmem", PartTmpfs}, {"zram", PartZram}, {"hugepages", PartHuge}, {"rest", PartRest},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("%+v", parts)
+	}
+	for i, w := range want {
+		if parts[i].Name != w.name || parts[i].Kind != w.kind {
+			t.Fatalf("part %d = %+v, want %v", i, parts[i], w)
+		}
+	}
+	if parts[3].Bytes != gib+gib/2 || parts[5].Bytes != gib/2 {
+		t.Fatalf("others/tmpfs %+v", parts)
+	}
+	if PartText(PartRest) == "" {
+		t.Fatal("no explanation for rest")
+	}
+}
+
+func TestExplainUsedOvercount(t *testing.T) {
+	m := procfs.Meminfo{"MemTotal": 10 * gib, "MemAvailable": 6 * gib, "SUnreclaim": gib}
+	// Groups claim more than the 3G left after the kernel's 1G.
+	parts := ExplainUsed(m, nil, []GroupUse{{Name: "a", Used: 4 * gib}, {Name: "b", Used: 2 * gib}}, 5)
+	if got := sumParts(parts); got != 4*gib {
+		t.Fatalf("sum %d: %+v", got, parts)
+	}
+	if parts[0].Bytes != 2*gib || parts[1].Bytes != gib {
+		t.Fatalf("not scaled proportionally: %+v", parts)
+	}
+	for _, p := range parts {
+		if p.Kind == PartRest {
+			t.Fatal("no rest expected")
+		}
+	}
+}

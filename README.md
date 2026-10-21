@@ -9,14 +9,15 @@ containers, VMs and kernel-level reclaim, it gives you the exact command to
 run instead.
 
 ```
- reclaim  RAM 27G/31G used · 4.1G available  swap 6.2G/8.0G  PSI some 18.0% full 2.0%
- view apps  sort uss  1 frozen (F)
+ reclaim  RAM 60% used (9.6G of 16G) · 6.4G available  swap 1.2G/8.0G  PSI some 18.0% full 2.0%
+ ██████████████████████████████████████████████████████████████····································
+ █ code 18%  █ kind: dev 15%  █ firefox 9%  █ slack 4%  █ 23 other groups 6%  █ kernel 5%  █ rest 3%  · available 40%
+ view apps  sort ram%
  ▲ pressure culprit: code — grew +900M in 1m0s, 35% of stall time
- Group                                      Flag      USS      PSS   Shared     Swap   Δ10m    PSI
-▸ code                       app            CG      3.8G     4.3G     310M     1.1G  +1.2G    21%
-▸ kind: dev (3 nodes, 41 pods)  kind-cluster        5.2G     5.6G     220M     400M   +80M     6%
-▸ firefox                    app              P     2.9G     3.6G     700M     900M   +10M     2%
- anon 14G[action]  cache 7.9G[kernel]  slab 1.1G[kernel]  slab-u 400M[no]  shmem 1.0G[action]  …
+ Group                                Flag   RAM%      USS      PSS     Swap   Δ10m    PSI
+▸ code                       app      CG      18%     2.6G     2.9G     1.1G  +1.2G    21%
+▸ kind: dev (3 nodes, 41 pods)  kind-cluster  15%     2.2G     2.4G     400M   +80M     6%
+▸ firefox                    app        P    9.0%     1.3G     1.6G     900M   +10M     2%
  v view  s sort  ⏎ expand  t terminate  f freeze  F frozen  c commands  K kernel  m memory  i info  ? help  q quit
 ```
 
@@ -38,6 +39,14 @@ only what depends on it.
 
 ## What it shows
 
+- **From "60% used" to groups.** The header shows used RAM the way system
+  monitors do (total minus available), then splits it in a bar: the largest
+  groups of the current view, the other groups, kernel memory, tmpfs, zram,
+  hugepages and the rest. Each group's **RAM%** column is its share of that
+  used memory: anonymous plus shared memory, with shared pages split fairly
+  among the processes that map them. The shares add up, so the groups in the
+  list add up to the bar. Page cache is left out because the kernel counts it
+  as available. The memory screen (`m`) explains every slice.
 - **Three views**, switched with `v`:
   - apps and systemd scopes, from cgroup v2
   - containers, pods (kind clusters shown as cluster → node → pod →

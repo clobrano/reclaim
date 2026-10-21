@@ -19,7 +19,8 @@ func (m *Model) headerLines() []line {
 		return []line{l}
 	}
 	s := sysmem.Summarize(m.snap.Meminfo)
-	l.add("", " RAM ").add(sBold, size(s.Used)+"/"+size(s.Total)).add("", " used · ").add(sBold, size(s.Available)).add("", " available")
+	l.add("", " RAM ").add(sBold, pct(s.Used, s.Total)+" used").
+		add("", fmt.Sprintf(" (%s of %s) · ", size(s.Used), size(s.Total))).add(sBold, size(s.Available)).add("", " available")
 	if s.SwapTotal > 0 {
 		l.add("", "  swap ").add(sBold, size(s.SwapUsed)+"/"+size(s.SwapTotal))
 	}
@@ -36,6 +37,9 @@ func (m *Model) headerLines() []line {
 		l.add(sDim, "  PSI n/a")
 	}
 	out = append(out, l)
+	if m.showUsageBar() {
+		out = append(out, m.usageLines()...)
+	}
 
 	l = line{}
 	l.add("", " view ").add(sBold, m.view.String()).add("", "  sort ").add(sBold, m.sort.String())
@@ -84,6 +88,13 @@ func (m *Model) columns() []column {
 		}
 	}
 	cols := []column{
+		{"RAM%", 6, func(g *model.Group) (string, string) {
+			s := pct(g.Mem.Used, m.snap.Meminfo["MemTotal"])
+			if g.Mem.Unreadable > 0 {
+				s += "*"
+			}
+			return s, sBold
+		}},
 		{"USS", 8, mem(func(x model.Mem) uint64 { return x.USS }, true)},
 		{"PSS", 8, mem(func(x model.Mem) uint64 { return x.PSS }, true)},
 	}
@@ -251,7 +262,8 @@ func (m *Model) footer() []line {
 	default:
 		if g := m.current(); g != nil {
 			e := model.EstimateOf(g.Mem)
-			status.add(sDim, fmt.Sprintf(" %s: %d processes · stopping frees about %s–%s", g.Name, len(g.Procs), size(e.Low), size(e.High)))
+			status.add(sDim, fmt.Sprintf(" %s: %d processes · %s of RAM in use · stopping frees about %s–%s",
+				g.Name, len(g.Procs), pct(g.Mem.Used, m.snap.Meminfo["MemTotal"]), size(e.Low), size(e.High)))
 			if t, steady := m.trend(g); steady {
 				status.add(sYellow, fmt.Sprintf(" · grew %s in %s", signedSize(t.Delta), t.Span.Round(time.Minute)))
 			}
@@ -523,6 +535,19 @@ func (m *Model) systemBox(w int) []line {
 	inner := dialogWidth(w)
 	tw := inner - 2
 	var body []line
+	total := m.snap.Meminfo["MemTotal"]
+	s := sysmem.Summarize(m.snap.Meminfo)
+	body = append(body, text(sBold, fmt.Sprintf("Why RAM is %s used (%s of %s)", pct(s.Used, total), size(s.Used), size(total))))
+	addWrapped(&body, sDim, "", "\"Used\" is total minus available, as free and system monitors count it. Page cache the kernel can drop counts as available. Groups are the top level of the current view ("+m.view.String()+"), so the slices match the list.", tw)
+	for i, p := range m.usedParts() {
+		l := line{}
+		l.add(partStyle(i, p), "█ ").add(sBold, padRight(p.Name, 22)).add("", padLeft(size(p.Bytes), 7)+"  "+padLeft(pct(p.Bytes, total), 5))
+		if t := sysmem.PartText(p.Kind); t != "" {
+			l.add(sDim, "  "+t)
+		}
+		body = append(body, l)
+	}
+	body = append(body, line{}, text(sBold, "All of RAM, by kind"))
 	rows := sysmem.Breakdown(m.snap.Meminfo, m.snap.Zram)
 	m.sysCursor = min(m.sysCursor, len(rows)-1)
 	for i, r := range rows {
@@ -636,7 +661,7 @@ func (m *Model) helpBox(w int) []line {
 		{"↑↓ j k, PgUp PgDn", "move"},
 		{"enter, → ←", "expand / collapse"},
 		{"v", "switch view: apps & scopes → containers, pods, VMs → process tree"},
-		{"s", "cycle sort: USS, PSS, swap, growth, PSI, name"},
+		{"s", "cycle sort: RAM%, USS, PSS, swap, growth, PSI, name"},
 		{"t", "terminate the group (SIGTERM, grace, SIGKILL), after confirmation"},
 		{"f", "freeze the group (cgroup.freeze or SIGSTOP), after confirmation"},
 		{"F", "frozen groups; resume them"},
@@ -664,7 +689,7 @@ func (m *Model) helpBox(w int) []line {
 		body = append(body, l)
 	}
 	body = append(body, line{})
-	addWrapped(&body, sDim, "", "USS is memory only this group maps; PSS splits shared pages among their users. Estimates use these, never RSS. Containers, pods, VMs and the kernel only get commands to copy.", inner-2)
+	addWrapped(&body, sDim, "", "RAM% is the group's share of RAM counted as used (anonymous and shared memory, split fairly among sharers); the bar at the top adds these up to the system's used percentage. USS is memory only this group maps; PSS splits shared pages among their users. Estimates use these, never RSS. Containers, pods, VMs and the kernel only get commands to copy.", inner-2)
 	return box("reclaim help", m.fit(body), inner, sCyan)
 }
 
@@ -678,4 +703,101 @@ func (m *Model) quitBox(w int) []line {
 	l.add(sBold+";"+sCyan, "r").add("", " resume all and quit   ").add(sBold+";"+sCyan, "k").add("", " keep frozen and quit   ").add(sBold+";"+sCyan, "esc").add("", " cancel")
 	body = append(body, l)
 	return box("Quit reclaim?", body, inner, sYellow)
+}
+
+// pct formats part/total as a percentage: 18%, 4.2%, <0.1%.
+func pct(part, total uint64) string {
+	if total == 0 {
+		return "?"
+	}
+	v := float64(part) / float64(total) * 100
+	switch {
+	case part == 0:
+		return "0%"
+	case v < 0.1:
+		return "<0.1%"
+	case v < 10:
+		return fmt.Sprintf("%.1f%%", v)
+	}
+	return fmt.Sprintf("%.0f%%", v)
+}
+
+// usedTopN is how many groups get their own slice of the usage bar.
+const usedTopN = 5
+
+var (
+	groupColors = []string{sCyan, sMagenta, sBlue, sGreen, sYellow}
+	partColors  = map[sysmem.PartKind]string{
+		sysmem.PartOthers: "37",
+		sysmem.PartKernel: sRed,
+		sysmem.PartTmpfs:  "93",
+		sysmem.PartZram:   "95",
+		sysmem.PartHuge:   "94",
+		sysmem.PartRest:   "90",
+	}
+)
+
+// usedParts explains the used percentage with the current view's top-level
+// groups, which are disjoint, so the bar matches the list below it.
+func (m *Model) usedParts() []sysmem.Part {
+	var gs []sysmem.GroupUse
+	for _, g := range m.views[m.view] {
+		gs = append(gs, sysmem.GroupUse{ID: g.ID, Name: g.Name, Used: g.Mem.Used, Shmem: g.Mem.UsedShmem})
+	}
+	return sysmem.ExplainUsed(m.snap.Meminfo, m.snap.Zram, gs, usedTopN)
+}
+
+func partStyle(i int, p sysmem.Part) string {
+	if p.Kind == sysmem.PartGroup {
+		return groupColors[i%len(groupColors)]
+	}
+	return partColors[p.Kind]
+}
+
+func (m *Model) showUsageBar() bool { return m.height >= 16 && m.width >= 40 }
+
+// usageLines draws "used" as a stacked bar over the whole of RAM, followed
+// by a legend, so the percentage maps onto the groups in the list.
+func (m *Model) usageLines() []line {
+	total := m.snap.Meminfo["MemTotal"]
+	parts := m.usedParts()
+	barW := m.width - 2
+	bar := line{{" ", ""}}
+	var cum uint64
+	drawn := 0
+	for i, p := range parts {
+		cum += p.Bytes
+		end := int(float64(cum) / float64(total) * float64(barW))
+		if end > drawn {
+			bar.add(partStyle(i, p), strings.Repeat("█", end-drawn))
+			drawn = end
+		}
+	}
+	if drawn < barW {
+		bar.add(sDim, strings.Repeat("·", barW-drawn))
+	}
+
+	var legend []line
+	cur := line{{" ", ""}}
+	add := func(item line) {
+		if cur.width()+item.width() > m.width-1 && len(cur) > 1 {
+			legend = append(legend, cur)
+			cur = line{{" ", ""}}
+		}
+		cur = append(cur, item...)
+	}
+	for i, p := range parts {
+		item := line{}
+		item.add(partStyle(i, p), "█ ").add("", truncate(p.Name, 20)+" ").add(sBold, pct(p.Bytes, total)).add("", "  ")
+		add(item)
+	}
+	s := sysmem.Summarize(m.snap.Meminfo)
+	item := line{}
+	item.add(sDim, "· available ").add(sBold, pct(s.Available, total))
+	add(item)
+	legend = append(legend, cur)
+	if len(legend) > 2 {
+		legend = legend[:2]
+	}
+	return append([]line{bar}, legend...)
 }

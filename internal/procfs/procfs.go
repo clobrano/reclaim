@@ -106,6 +106,10 @@ type Status struct {
 	UID    int
 	VmRSS  uint64 // bytes
 	VmSwap uint64 // bytes
+	// RssAnon and RssShmem split VmRSS; readable even when smaps_rollup
+	// is not.
+	RssAnon  uint64
+	RssShmem uint64
 }
 
 // ParseStatus parses the contents of /proc/<pid>/status.
@@ -128,6 +132,10 @@ func ParseStatus(data []byte) Status {
 			st.VmRSS = kb(fields)
 		case "VmSwap":
 			st.VmSwap = kb(fields)
+		case "RssAnon":
+			st.RssAnon = kb(fields)
+		case "RssShmem":
+			st.RssShmem = kb(fields)
 		}
 	}
 	return st
@@ -161,7 +169,14 @@ type Rollup struct {
 	PrivateDirty uint64
 	Swap         uint64
 	SwapPSS      uint64
+	// PSS split by backing (Linux 5.7+; all zero on older kernels).
+	PSSAnon  uint64
+	PSSFile  uint64
+	PSSShmem uint64
 }
+
+// HasPSSSplit reports whether the kernel provided Pss_Anon/File/Shmem.
+func (r Rollup) HasPSSSplit() bool { return r.PSSAnon+r.PSSFile+r.PSSShmem > 0 }
 
 // USS is the memory only this process maps.
 func (r Rollup) USS() uint64 { return r.PrivateClean + r.PrivateDirty }
@@ -200,6 +215,12 @@ func ParseRollup(data []byte) Rollup {
 			dst = &r.Swap
 		case "SwapPss":
 			dst = &r.SwapPSS
+		case "Pss_Anon":
+			dst = &r.PSSAnon
+		case "Pss_File":
+			dst = &r.PSSFile
+		case "Pss_Shmem":
+			dst = &r.PSSShmem
 		}
 		if dst != nil {
 			*dst = kb(fields)

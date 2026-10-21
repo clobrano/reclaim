@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/clobrano/reclaim/internal/procfs"
 )
 
 func TestSampleLive(t *testing.T) {
@@ -53,5 +55,20 @@ func TestReadZram(t *testing.T) {
 func TestCloseEnough(t *testing.T) {
 	if !closeEnough(1000, 1005) || closeEnough(1000, 1100) || !closeEnough(0, 0) {
 		t.Fatal("closeEnough")
+	}
+}
+
+func TestUsedOf(t *testing.T) {
+	split := procfs.Rollup{PSS: 1000, RSS: 2000, PSSAnon: 600, PSSFile: 300, PSSShmem: 100}
+	if u, s := usedOf(split, procfs.Status{}); u != 700 || s != 100 {
+		t.Fatalf("split: %d %d", u, s)
+	}
+	// Pre-5.7 kernels: PSS scaled by the anon+shmem share of RSS.
+	old := procfs.Rollup{PSS: 1000, RSS: 2000}
+	if u, s := usedOf(old, procfs.Status{RssAnon: 1200, RssShmem: 200}); u != 700 || s != 100 {
+		t.Fatalf("scaled: %d %d", u, s)
+	}
+	if u, _ := usedOf(procfs.Rollup{}, procfs.Status{}); u != 0 {
+		t.Fatal("empty")
 	}
 }

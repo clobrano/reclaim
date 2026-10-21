@@ -140,6 +140,14 @@ func wrapGroups(gs []*model.Group) []dumpGroup {
 	return out
 }
 
+func groupUses(gs []*model.Group) []sysmem.GroupUse {
+	out := make([]sysmem.GroupUse, 0, len(gs))
+	for _, g := range gs {
+		out = append(out, sysmem.GroupUse{ID: g.ID, Name: g.Name, Used: g.Mem.Used, Shmem: g.Mem.UsedShmem})
+	}
+	return out
+}
+
 func dumpJSON(s *sample.Sampler, view group.View, names group.Names) int {
 	snap, err := s.Sample()
 	if err != nil {
@@ -157,6 +165,7 @@ func dumpJSON(s *sample.Sampler, view group.View, names group.Names) int {
 		"zram":      snap.Zram,
 		"warnings":  snap.Warnings,
 		"groups":    wrapGroups(groups),
+		"used":      sysmem.ExplainUsed(snap.Meminfo, snap.Zram, groupUses(groups), 5),
 		"kernel":    suggest.Kernel(snap.Meminfo, snap.Zram),
 	}
 	enc := json.NewEncoder(os.Stdout)

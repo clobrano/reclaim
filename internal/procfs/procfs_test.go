@@ -33,8 +33,8 @@ func TestParseStat(t *testing.T) {
 }
 
 func TestParseStatus(t *testing.T) {
-	st := ParseStatus([]byte("Name:\tbash\nUid:\t1000\t1000\t1000\t1000\nVmRSS:\t    1924 kB\nVmSwap:\t  10 kB\n"))
-	if st.UID != 1000 || st.VmRSS != 1924*1024 || st.VmSwap != 10*1024 {
+	st := ParseStatus([]byte("Name:\tbash\nUid:\t1000\t1000\t1000\t1000\nVmRSS:\t    1924 kB\nRssAnon:\t 1000 kB\nRssShmem:\t 24 kB\nVmSwap:\t  10 kB\n"))
+	if st.UID != 1000 || st.VmRSS != 1924*1024 || st.VmSwap != 10*1024 || st.RssAnon != 1000*1024 || st.RssShmem != 24*1024 {
 		t.Fatalf("unexpected %+v", st)
 	}
 }
@@ -44,6 +44,9 @@ func TestParseRollup(t *testing.T) {
 Rss:                1564 kB
 Pss:                 446 kB
 Pss_Dirty:           112 kB
+Pss_Anon:            100 kB
+Pss_File:            330 kB
+Pss_Shmem:            16 kB
 Shared_Clean:       1416 kB
 Shared_Dirty:          0 kB
 Private_Clean:        36 kB
@@ -53,6 +56,9 @@ SwapPss:              10 kB
 `))
 	if r.RSS != 1564*1024 || r.PSS != 446*1024 || r.USS() != 148*1024 || r.Shared() != 1416*1024 {
 		t.Fatalf("unexpected %+v", r)
+	}
+	if !r.HasPSSSplit() || r.PSSAnon != 100*1024 || r.PSSFile != 330*1024 || r.PSSShmem != 16*1024 {
+		t.Fatalf("unexpected split %+v", r)
 	}
 	if r.Swap != 20*1024 || r.SwapPSS != 10*1024 {
 		t.Fatalf("unexpected swap %+v", r)

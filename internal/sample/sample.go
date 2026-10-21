@@ -159,10 +159,28 @@ func (s *Sampler) process(pid int, now time.Time) *model.Process {
 			USS: r.USS(), PSS: r.PSS, Shared: r.Shared(),
 			Swap: r.Swap, SwapPSS: r.SwapPSS, RSS: r.RSS,
 		}
+		p.Mem.Used, p.Mem.UsedShmem = usedOf(r, status)
 	} else {
-		p.Mem = model.Mem{RSS: status.VmRSS, Swap: status.VmSwap, Unreadable: 1}
+		// Without smaps_rollup only resident sizes are known; they count
+		// shared pages in full, so this slightly overstates the share.
+		p.Mem = model.Mem{RSS: status.VmRSS, Swap: status.VmSwap, Unreadable: 1,
+			Used: status.RssAnon + status.RssShmem, UsedShmem: status.RssShmem}
 	}
 	return p
+}
+
+// usedOf returns a process's share of used RAM and its shared-memory part.
+// Kernels before 5.7 don't split PSS; scale PSS by the anonymous+shmem share
+// of RSS instead.
+func usedOf(r procfs.Rollup, st procfs.Status) (used, shmem uint64) {
+	if r.HasPSSSplit() {
+		return r.PSSAnon + r.PSSShmem, r.PSSShmem
+	}
+	if r.RSS == 0 {
+		return 0, 0
+	}
+	scale := func(x uint64) uint64 { return uint64(float64(r.PSS) * float64(x) / float64(r.RSS)) }
+	return scale(st.RssAnon + st.RssShmem), scale(st.RssShmem)
 }
 
 func (s *Sampler) rollup(pid int, st procfs.Stat, status procfs.Status, now time.Time) (procfs.Rollup, bool) {
