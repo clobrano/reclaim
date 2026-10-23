@@ -397,3 +397,124 @@ func (fs FS) ReadSwaps() ([]Swap, error) {
 	}
 	return ParseSwaps(data), nil
 }
+
+// Mount is one line of /proc/<pid>/mountinfo.
+type Mount struct {
+	Dev        string // major:minor of the filesystem
+	MountPoint string
+	FSType     string
+	Source     string
+}
+
+// ParseMountinfo parses /proc/<pid>/mountinfo.
+func ParseMountinfo(data []byte) []Mount {
+	var out []Mount
+	for _, line := range strings.Split(string(data), "\n") {
+		pre, post, ok := strings.Cut(line, " - ")
+		if !ok {
+			continue
+		}
+		a, b := strings.Fields(pre), strings.Fields(post)
+		if len(a) < 5 || len(b) < 2 {
+			continue
+		}
+		out = append(out, Mount{Dev: a[2], MountPoint: unescapeOctal(a[4]), FSType: b[0], Source: unescapeOctal(b[1])})
+	}
+	return out
+}
+
+// unescapeOctal decodes the \040-style escapes mountinfo uses for spaces.
+func unescapeOctal(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// ReadMountinfo reads the mount table of reclaim's own mount namespace.
+func (fs FS) ReadMountinfo() ([]Mount, error) {
+	data, err := os.ReadFile(fs.path("self", "mountinfo"))
+	if err != nil {
+		return nil, err
+	}
+	return ParseMountinfo(data), nil
+}
+
+// ShmSegment is a System V shared memory segment from /proc/sysvipc/shm.
+type ShmSegment struct {
+	Key    string
+	ID     int
+	Perms  uint64 // includes SHM_DEST (01000) once removal was requested
+	Size   uint64
+	Nattch int
+	UID    int
+	CPID   int
+	RSS    uint64 // resident bytes
+	Swap   uint64
+}
+
+// shmDest marks a segment that will be destroyed on its last detach.
+const shmDest = 0o1000
+
+// Orphaned reports a segment no process has attached and nobody removed.
+func (s ShmSegment) Orphaned() bool { return s.Nattch == 0 && s.Perms&shmDest == 0 }
+
+// ParseSysvShm parses /proc/sysvipc/shm, locating columns by the header so
+// older kernels without rss/swap columns still parse.
+func ParseSysvShm(data []byte) []ShmSegment {
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 {
+		return nil
+	}
+	col := map[string]int{}
+	for i, h := range strings.Fields(lines[0]) {
+		col[h] = i
+	}
+	get := func(f []string, name string) string {
+		if i, ok := col[name]; ok && i < len(f) {
+			return f[i]
+		}
+		return ""
+	}
+	num := func(s string) uint64 { v, _ := strconv.ParseUint(s, 10, 64); return v }
+	var out []ShmSegment
+	for _, line := range lines[1:] {
+		f := strings.Fields(line)
+		if len(f) < 7 {
+			continue
+		}
+		perms, _ := strconv.ParseUint(get(f, "perms"), 8, 64)
+		out = append(out, ShmSegment{
+			Key:    get(f, "key"),
+			ID:     int(num(get(f, "shmid"))),
+			Perms:  perms,
+			Size:   num(get(f, "size")),
+			Nattch: int(num(get(f, "nattch"))),
+			UID:    int(num(get(f, "uid"))),
+			CPID:   int(num(get(f, "cpid"))),
+			RSS:    num(get(f, "rss")),
+			Swap:   num(get(f, "swap")),
+		})
+	}
+	return out
+}
+
+// ReadSysvShm reads /proc/sysvipc/shm.
+func (fs FS) ReadSysvShm() ([]ShmSegment, error) {
+	data, err := os.ReadFile(fs.path("sysvipc", "shm"))
+	if err != nil {
+		return nil, err
+	}
+	return ParseSysvShm(data), nil
+}

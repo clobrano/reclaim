@@ -72,3 +72,25 @@ func TestUsedOf(t *testing.T) {
 		t.Fatal("empty")
 	}
 }
+
+func TestTmpfsUsage(t *testing.T) {
+	mounts := []procfs.Mount{
+		{Dev: "0:24", MountPoint: "/dev/shm", FSType: "tmpfs"},
+		{Dev: "0:22", MountPoint: "/proc", FSType: "proc"},
+		{Dev: "0:30", MountPoint: "/tmp", FSType: "tmpfs"},
+		{Dev: "0:30", MountPoint: "/var/tmp/bound", FSType: "tmpfs"}, // bind of /tmp
+		{Dev: "0:28", MountPoint: "/dev/shm", FSType: "tmpfs"},       // mounted over /dev/shm
+		{Dev: "0:40", MountPoint: "/gone", FSType: "tmpfs"},
+	}
+	usage := map[string]uint64{"/dev/shm": 100, "/tmp": 500, "/var/tmp/bound": 500}
+	got := TmpfsUsage(mounts, func(p string) (uint64, uint64, error) {
+		u, ok := usage[p]
+		if !ok {
+			return 0, 0, os.ErrNotExist
+		}
+		return u, 1000, nil
+	})
+	if len(got) != 2 || got[0].Path != "/tmp" || got[0].Used != 500 || got[1].Path != "/dev/shm" {
+		t.Fatalf("%+v", got)
+	}
+}

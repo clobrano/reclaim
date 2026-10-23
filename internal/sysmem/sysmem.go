@@ -251,7 +251,7 @@ func ExplainUsed(m procfs.Meminfo, zram []model.Zram, groups []GroupUse, topN in
 	}
 	fixed := []Part{
 		{Name: "kernel", Kind: PartKernel, Bytes: m["SUnreclaim"] + m["PageTables"] + m["SecPageTables"] + m["KernelStack"] + m["Percpu"]},
-		{Name: "tmpfs & unmapped shmem", Kind: PartTmpfs, Bytes: sub(m["Shmem"], procShmem)},
+		{Name: "tmpfs & shmem", Kind: PartTmpfs, Bytes: sub(m["Shmem"], procShmem)},
 		{Name: "zram", Kind: PartZram, Bytes: zramUsed},
 		{Name: "hugepages", Kind: PartHuge, Bytes: m["HugePages_Total"] * m["Hugepagesize"]},
 	}
@@ -299,3 +299,66 @@ func ExplainUsed(m procfs.Meminfo, zram []model.Zram, groups []GroupUse, topN in
 	}
 	return parts
 }
+
+// ShmemPart is one place the "tmpfs & shmem" slice can live.
+type ShmemPart struct {
+	Name  string `json:"name"`
+	Kind  string `json:"kind"` // "tmpfs", "sysv", "other"
+	Bytes uint64 `json:"bytes"`
+	Path  string `json:"path,omitempty"`
+	// SegmentIDs lists orphaned System V segments, largest first.
+	SegmentIDs []int `json:"segment_ids,omitempty"`
+}
+
+// shmemTopMounts is how many tmpfs mounts are listed by name.
+const shmemTopMounts = 6
+
+// ExplainShmem breaks down the shared memory no process maps (slice, the
+// "tmpfs & shmem" part of used memory) into tmpfs mounts, orphaned
+// System V segments, and what is left. Mount sizes come from statfs and
+// include swapped-out files and files a process maps, so the listed parts can
+// add up to more than the slice; "other" is then empty.
+func ExplainShmem(slice uint64, tmpfs []model.Tmpfs, shm []procfs.ShmSegment) []ShmemPart {
+	var out []ShmemPart
+	var listed, others uint64
+	nOthers := 0
+	for _, t := range tmpfs {
+		if t.Used == 0 {
+			continue
+		}
+		listed += t.Used
+		if len(out) < shmemTopMounts {
+			out = append(out, ShmemPart{Name: t.Path, Kind: "tmpfs", Bytes: t.Used, Path: t.Path})
+			continue
+		}
+		others += t.Used
+		nOthers++
+	}
+	if nOthers > 0 {
+		out = append(out, ShmemPart{Name: fmt.Sprintf("%d other tmpfs mounts", nOthers), Kind: "tmpfs", Bytes: others})
+	}
+	var orphans []procfs.ShmSegment
+	var orphanBytes uint64
+	for _, s := range shm {
+		if s.Orphaned() {
+			orphans = append(orphans, s)
+			orphanBytes += s.RSS
+		}
+	}
+	if len(orphans) > 0 {
+		sort.Slice(orphans, func(i, j int) bool { return orphans[i].RSS > orphans[j].RSS })
+		p := ShmemPart{Name: fmt.Sprintf("%d orphaned System V segments", len(orphans)), Kind: "sysv", Bytes: orphanBytes}
+		for _, s := range orphans {
+			p.SegmentIDs = append(p.SegmentIDs, s.ID)
+		}
+		out = append(out, p)
+		listed += orphanBytes
+	}
+	if rest := sub(slice, listed); rest > 0 {
+		out = append(out, ShmemPart{Name: "not on a visible tmpfs", Kind: "other", Bytes: rest})
+	}
+	return out
+}
+
+// ShmemOtherText explains the "other" part of ExplainShmem.
+const ShmemOtherText = "Shared memory reclaim can't place: memfd and GPU buffers held by processes without mapping them, tmpfs mounts in other mount namespaces (containers, Flatpak sandboxes) or hidden under another mount."

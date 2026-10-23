@@ -746,6 +746,16 @@ func (m *Model) openKernel() {
 		m.suggTitle = "Kernel-level commands"
 	}
 	m.suggs = suggest.Kernel(m.snap.Meminfo, m.snap.Zram)
+	// Shared memory nothing maps is often the largest slice of "used", and
+	// only these commands reach it: put them first.
+	if slice, parts := m.shmemParts(); slice >= 256<<20 {
+		if sh := suggest.Shmem(parts, m.snap.Shm, os.Getuid()); len(sh) > 0 {
+			m.suggs = append(sh, m.suggs...)
+			if m.suggTitle == "Kernel-level commands" {
+				m.suggTitle = "Shared memory and kernel-level commands"
+			}
+		}
+	}
 	m.suggCursor = 0
 	m.mode = modeSuggest
 }

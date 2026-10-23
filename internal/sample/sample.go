@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/clobrano/reclaim/internal/cgroupfs"
@@ -85,6 +87,10 @@ func (s *Sampler) Sample() (*model.Snapshot, error) {
 	}
 	snap.Swaps, _ = s.Proc.ReadSwaps()
 	snap.Zram = ReadZram(s.SysBlock)
+	if mounts, err := s.Proc.ReadMountinfo(); err == nil {
+		snap.Tmpfs = TmpfsUsage(mounts, statfsUsage)
+	}
+	snap.Shm, _ = s.Proc.ReadSysvShm()
 	if !snap.Unified {
 		snap.Warnings = append(snap.Warnings, "cgroup v2 not mounted: grouping falls back to the process tree")
 	}
@@ -216,6 +222,52 @@ func closeEnough(a, b uint64) bool {
 		d = b - a
 	}
 	return d*100 <= max(a, b) // within 1%
+}
+
+// statfsUsage returns used and total bytes of the filesystem at path.
+func statfsUsage(path string) (used, size uint64, err error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, 0, err
+	}
+	bs := uint64(st.Bsize)
+	return (st.Blocks - st.Bfree) * bs, st.Blocks * bs, nil
+}
+
+// TmpfsUsage measures each tmpfs (and devtmpfs) filesystem once. A path
+// mounted over keeps only its topmost mount, the only one statfs can reach;
+// bind mounts of one filesystem count once, under its shortest path.
+func TmpfsUsage(mounts []procfs.Mount, statfs func(string) (uint64, uint64, error)) []model.Tmpfs {
+	top := map[string]procfs.Mount{} // by mount point; later lines mount over earlier ones
+	var order []string
+	for _, m := range mounts {
+		if m.FSType != "tmpfs" && m.FSType != "devtmpfs" {
+			continue
+		}
+		if _, seen := top[m.MountPoint]; !seen {
+			order = append(order, m.MountPoint)
+		}
+		top[m.MountPoint] = m
+	}
+	byDev := map[string]int{}
+	var out []model.Tmpfs
+	for _, p := range order {
+		m := top[p]
+		used, size, err := statfs(p)
+		if err != nil {
+			continue
+		}
+		if i, ok := byDev[m.Dev]; ok {
+			if len(p) < len(out[i].Path) {
+				out[i].Path = p
+			}
+			continue
+		}
+		byDev[m.Dev] = len(out)
+		out = append(out, model.Tmpfs{Path: p, Used: used, Size: size})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Used > out[j].Used })
+	return out
 }
 
 // ReadZram reads mm_stat of every zram device under sysBlock.

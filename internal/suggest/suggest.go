@@ -10,6 +10,7 @@ import (
 	"github.com/clobrano/reclaim/internal/model"
 	"github.com/clobrano/reclaim/internal/pressure"
 	"github.com/clobrano/reclaim/internal/procfs"
+	"github.com/clobrano/reclaim/internal/sysmem"
 )
 
 // Suggestion is one command the user can copy and run.
@@ -274,4 +275,71 @@ func Kernel(m procfs.Meminfo, zram []model.Zram) []Suggestion {
 		flush.Caveat += " Swap is on zram: flushing turns compressed pages back into uncompressed RAM, so it uses more RAM than zram does now."
 	}
 	return append(out, flush)
+}
+
+// Shmem returns commands to find and free the shared memory no process maps:
+// what fills each large tmpfs, orphaned System V segments, and memfd buffers.
+func Shmem(parts []sysmem.ShmemPart, shm []procfs.ShmSegment, selfUID int) []Suggestion {
+	segs := map[int]procfs.ShmSegment{}
+	for _, s := range shm {
+		segs[s.ID] = s
+	}
+	var out []Suggestion
+	for _, p := range parts {
+		switch p.Kind {
+		case "tmpfs":
+			if p.Path == "" || p.Bytes < 16<<20 {
+				continue
+			}
+			words := []string{"du", "-xah", p.Path}
+			prefix := ""
+			if otherUsersDir(p.Path, selfUID) {
+				prefix = "sudo "
+			}
+			out = append(out, Suggestion{
+				Title:  "See what fills " + p.Path,
+				Cmd:    prefix + cmd(words...) + " 2>/dev/null | sort -h | tail -20",
+				Effect: fmt.Sprintf("lists the largest of %s of files; deleting them frees that memory", pressure.Bytes(p.Bytes)),
+				Caveat: "Files on tmpfs live in RAM (or swap) until deleted. A file still open is freed only when its program closes it; files under /dev/shm and /run/user usually belong to running apps, so check before deleting.",
+			})
+		case "sysv":
+			for i, id := range p.SegmentIDs {
+				if i == 3 {
+					break
+				}
+				s := segs[id]
+				c := cmd("ipcrm", "-m", fmt.Sprint(id))
+				if s.UID != selfUID && selfUID != 0 {
+					c = "sudo " + c
+				}
+				out = append(out, Suggestion{
+					Title:  fmt.Sprintf("Remove orphaned shared-memory segment %d", id),
+					Cmd:    c,
+					Effect: "frees " + pressure.Bytes(s.RSS),
+					Caveat: fmt.Sprintf("No process has it attached; it was created by pid %d. A program that crashed may expect to reattach it on restart (databases do), so make sure its owner is gone for good.", s.CPID),
+				})
+			}
+		case "other":
+			if p.Bytes < 256<<20 {
+				continue
+			}
+			out = append(out, Suggestion{
+				Title:  "Find processes holding memfd buffers",
+				Cmd:    "sudo lsof -n 2>/dev/null | grep 'memfd:' | sort -k7 -n | tail -20",
+				Effect: fmt.Sprintf("helps place %s of shared memory that isn't on a visible tmpfs", pressure.Bytes(p.Bytes)),
+				Caveat: "The SIZE column is the buffer size; the memory goes away when every holder closes it, usually by exiting. GPU buffers don't show here: as root, look at /sys/kernel/debug/dri/*/gem_names or your driver's equivalent.",
+			})
+		}
+	}
+	return out
+}
+
+// otherUsersDir reports a /run/user/<uid> path of another user.
+func otherUsersDir(path string, selfUID int) bool {
+	rest, ok := strings.CutPrefix(path, "/run/user/")
+	if !ok || selfUID == 0 {
+		return false
+	}
+	uid, _, _ := strings.Cut(rest, "/")
+	return uid != fmt.Sprint(selfUID)
 }

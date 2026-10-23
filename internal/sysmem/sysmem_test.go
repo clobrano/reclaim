@@ -1,6 +1,7 @@
 package sysmem
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/clobrano/reclaim/internal/model"
@@ -94,7 +95,7 @@ func TestExplainUsed(t *testing.T) {
 	}{
 		{"code", PartGroup}, {"kind", PartGroup}, {"firefox", PartGroup},
 		{"2 other groups", PartOthers}, {"kernel", PartKernel},
-		{"tmpfs & unmapped shmem", PartTmpfs}, {"zram", PartZram}, {"hugepages", PartHuge}, {"rest", PartRest},
+		{"tmpfs & shmem", PartTmpfs}, {"zram", PartZram}, {"hugepages", PartHuge}, {"rest", PartRest},
 	}
 	if len(parts) != len(want) {
 		t.Fatalf("%+v", parts)
@@ -126,5 +127,39 @@ func TestExplainUsedOvercount(t *testing.T) {
 		if p.Kind == PartRest {
 			t.Fatal("no rest expected")
 		}
+	}
+}
+
+func TestExplainShmem(t *testing.T) {
+	tmpfs := []model.Tmpfs{{Path: "/dev/shm", Used: 6 * gib}, {Path: "/tmp", Used: 2 * gib}, {Path: "/run", Used: 0}}
+	for i := 0; i < 7; i++ {
+		tmpfs = append(tmpfs, model.Tmpfs{Path: "/run/user/" + string(rune('a'+i)), Used: 1 << 20})
+	}
+	shm := []procfs.ShmSegment{
+		{ID: 1, RSS: gib / 2},            // orphaned
+		{ID: 2, RSS: gib, Nattch: 1},     // attached: a process maps it
+		{ID: 3, RSS: gib, Perms: 0o1600}, // marked for removal
+		{ID: 4, RSS: gib},                // orphaned, larger
+	}
+	parts := ExplainShmem(10*gib, tmpfs, shm)
+	names := []string{}
+	for _, p := range parts {
+		names = append(names, p.Name)
+	}
+	want := "/dev/shm,/tmp,/run/user/a,/run/user/b,/run/user/c,/run/user/d,3 other tmpfs mounts,2 orphaned System V segments,not on a visible tmpfs"
+	if got := strings.Join(names, ","); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+	sysv := parts[len(parts)-2]
+	if sysv.Bytes != gib+gib/2 || len(sysv.SegmentIDs) != 2 || sysv.SegmentIDs[0] != 4 {
+		t.Fatalf("%+v", sysv)
+	}
+	other := parts[len(parts)-1]
+	if other.Bytes != 10*gib-8*gib-7<<20-gib-gib/2 {
+		t.Fatalf("other %d", other.Bytes)
+	}
+	// Mounts larger than the slice (swapped-out files): no "other" part.
+	if p := ExplainShmem(gib, tmpfs, nil); p[len(p)-1].Kind == "other" {
+		t.Fatal("other should be empty")
 	}
 }

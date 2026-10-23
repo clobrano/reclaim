@@ -75,7 +75,9 @@ type Snapshot struct {
 	PSI      *procfs.PSI // nil when PSI is unavailable
 	Swaps    []procfs.Swap
 	Zram     []Zram
-	Unified  bool // cgroup v2 available
+	Tmpfs    []Tmpfs             // tmpfs mounts visible to reclaim
+	Shm      []procfs.ShmSegment // System V shared memory segments
+	Unified  bool                // cgroup v2 available
 	CgMem    map[string]cgroupfs.Mem
 	CgPSI    map[string]procfs.PSI
 	Warnings []string
@@ -87,6 +89,14 @@ type Zram struct {
 	OrigData  uint64 `json:"orig_data"`
 	ComprData uint64 `json:"compr_data"`
 	MemUsed   uint64 `json:"mem_used"`
+}
+
+// Tmpfs is the usage of one tmpfs filesystem, from statfs. Used counts
+// file data whether it is in RAM or swapped out.
+type Tmpfs struct {
+	Path string `json:"path"`
+	Used uint64 `json:"used"`
+	Size uint64 `json:"size"`
 }
 
 // Kind classifies a group.

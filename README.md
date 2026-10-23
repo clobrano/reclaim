@@ -47,6 +47,13 @@ only what depends on it.
   among the processes that map them. The shares add up, so the groups in the
   list add up to the bar. Page cache is left out because the kernel counts it
   as available. The memory screen (`m`) explains every slice.
+- **Shared memory nobody maps.** Files on tmpfs (`/dev/shm`, `/tmp`,
+  `/run/user/…`) and leftover shared memory can make up a large part of "used"
+  without belonging to any group. The memory screen splits the
+  "tmpfs & shmem" slice into tmpfs mounts (by used space), orphaned System V
+  segments and what can't be placed (memfd, GPU buffers, other namespaces).
+  `c` there offers commands to find the files (`du`), remove orphaned
+  segments (`ipcrm`) and find memfd holders (`lsof`).
 - **Three views**, switched with `v`:
   - apps and systemd scopes, from cgroup v2
   - containers, pods (kind clusters shown as cluster → node → pod →
