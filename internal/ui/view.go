@@ -547,6 +547,18 @@ func (m *Model) systemBox(w int) []line {
 		}
 		body = append(body, l)
 	}
+	if tmpfs, parts := m.shmemParts(); tmpfs >= total/100 {
+		body = append(body, line{}, text(sBold, fmt.Sprintf("Inside tmpfs & shmem (%s): shared memory no process maps", size(tmpfs))))
+		for _, p := range parts {
+			l := line{}
+			l.add("", "  "+padRight(p.Name, 30)).add(sBold, padLeft(size(p.Bytes), 7))
+			body = append(body, l)
+			if p.Kind == "other" {
+				addWrapped(&body, sDim, "    ", sysmem.ShmemOtherText, tw)
+			}
+		}
+		addWrapped(&body, sDim, "  ", "Mount sizes include files swapped out or mapped by a process, so they can add up to more than the slice. c: commands to find and free it.", tw)
+	}
 	body = append(body, line{}, text(sBold, "All of RAM, by kind"))
 	rows := sysmem.Breakdown(m.snap.Meminfo, m.snap.Zram)
 	m.sysCursor = min(m.sysCursor, len(rows)-1)
@@ -745,6 +757,17 @@ func (m *Model) usedParts() []sysmem.Part {
 		gs = append(gs, sysmem.GroupUse{ID: g.ID, Name: g.Name, Used: g.Mem.Used, Shmem: g.Mem.UsedShmem})
 	}
 	return sysmem.ExplainUsed(m.snap.Meminfo, m.snap.Zram, gs, usedTopN)
+}
+
+// shmemParts returns the size of the "tmpfs & shmem" slice and where it lives.
+func (m *Model) shmemParts() (uint64, []sysmem.ShmemPart) {
+	var slice uint64
+	for _, p := range m.usedParts() {
+		if p.Kind == sysmem.PartTmpfs {
+			slice = p.Bytes
+		}
+	}
+	return slice, sysmem.ExplainShmem(slice, m.snap.Tmpfs, m.snap.Shm)
 }
 
 func partStyle(i int, p sysmem.Part) string {

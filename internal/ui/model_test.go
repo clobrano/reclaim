@@ -386,3 +386,33 @@ func TestPct(t *testing.T) {
 		}
 	}
 }
+
+func TestShmemBreakdown(t *testing.T) {
+	f := &fakeSnap{time: time.Now()}
+	m := newModel(t, func() (*model.Snapshot, error) {
+		s, err := f.sample()
+		s.Meminfo["Shmem"] = 5 * gib
+		s.Tmpfs = []model.Tmpfs{{Path: "/dev/shm", Used: 3 * gib, Size: 8 * gib}, {Path: "/tmp", Used: gib / 2, Size: 8 * gib}}
+		s.Shm = []procfs.ShmSegment{{ID: 77, RSS: gib, UID: os.Getuid(), CPID: 4242}}
+		return s, err
+	})
+	m.SetSize(130, 60)
+	drive(t, m, m.Init())
+	if !strings.Contains(screen(m), "█ tmpfs & shmem 31%") {
+		t.Fatalf("legend:\n%s", screen(m))
+	}
+	keys(t, m, "m")
+	s := screen(m)
+	for _, want := range []string{"Inside tmpfs & shmem (5.0G)", "/dev/shm", "3.0G", "1 orphaned System V segments", "not on a visible tmpfs", "512M"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("memory screen lacks %q:\n%s", want, s)
+		}
+	}
+	keys(t, m, "c")
+	s = screen(m)
+	for _, want := range []string{"Shared memory and kernel-level commands", "du -xah /dev/shm", "ipcrm -m 77", "drop_caches"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("commands lack %q:\n%s", want, s)
+		}
+	}
+}

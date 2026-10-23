@@ -156,3 +156,35 @@ func TestLiveSelf(t *testing.T) {
 		t.Fatalf("implausible %+v", r)
 	}
 }
+
+func TestParseMountinfo(t *testing.T) {
+	m := ParseMountinfo([]byte("26 25 0:24 / /dev/shm rw,relatime - tmpfs tmpfs rw,size=16477348k\n" +
+		"40 28 0:31 / /run/user/1000/my\\040dir rw shared:9 - tmpfs tmpfs rw\n" +
+		"23 28 0:22 / /proc rw,relatime - proc proc rw\n"))
+	if len(m) != 3 || m[0].Dev != "0:24" || m[0].MountPoint != "/dev/shm" || m[0].FSType != "tmpfs" {
+		t.Fatalf("%+v", m)
+	}
+	if m[1].MountPoint != "/run/user/1000/my dir" {
+		t.Fatalf("optional fields or escapes: %+v", m[1])
+	}
+}
+
+func TestParseSysvShm(t *testing.T) {
+	data := `       key      shmid perms                  size  cpid  lpid nattch   uid   gid  cuid  cgid      atime      dtime      ctime                   rss                  swap
+         0          5   600               4194304  1234  1300      0  1000  1000  1000  1000 1700000000 1700000000 1700000000               4194304                     0
+         0          6  1600                524288  1234  1300      0  1000  1000  1000  1000 1700000000 1700000000 1700000000                524288                     0
+         0          7   600                524288  1234  1300      2  1000  1000  1000  1000 1700000000 1700000000 1700000000                 65536                     0
+`
+	s := ParseSysvShm([]byte(data))
+	if len(s) != 3 || s[0].ID != 5 || s[0].Size != 4<<20 || s[0].RSS != 4<<20 || s[0].UID != 1000 || s[0].CPID != 1234 {
+		t.Fatalf("%+v", s)
+	}
+	if !s[0].Orphaned() || s[1].Orphaned() || s[2].Orphaned() {
+		t.Fatalf("orphaned: %v %v %v (perms %o)", s[0].Orphaned(), s[1].Orphaned(), s[2].Orphaned(), s[1].Perms)
+	}
+	// Old kernels: no rss/swap columns.
+	old := ParseSysvShm([]byte("key shmid perms size cpid lpid nattch uid\n 0 9 600 4096 1 1 0 0\n"))
+	if len(old) != 1 || old[0].RSS != 0 || old[0].Size != 4096 {
+		t.Fatalf("%+v", old)
+	}
+}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/clobrano/reclaim/internal/model"
 	"github.com/clobrano/reclaim/internal/procfs"
+	"github.com/clobrano/reclaim/internal/sysmem"
 )
 
 func TestQuote(t *testing.T) {
@@ -111,5 +112,27 @@ func TestKernelSwapFlush(t *testing.T) {
 	}
 	if s := Kernel(procfs.Meminfo{}, nil)[0]; !strings.Contains(s.Caveat, "pointless") {
 		t.Fatal("drop_caches caveat")
+	}
+}
+
+func TestShmem(t *testing.T) {
+	parts := []sysmem.ShmemPart{
+		{Name: "/dev/shm", Kind: "tmpfs", Path: "/dev/shm", Bytes: 6 << 30},
+		{Name: "/run/user/1001", Kind: "tmpfs", Path: "/run/user/1001", Bytes: 100 << 20},
+		{Name: "/run/user/1000", Kind: "tmpfs", Path: "/run/user/1000", Bytes: 1 << 20}, // too small
+		{Name: "2 orphaned System V segments", Kind: "sysv", Bytes: 3 << 30, SegmentIDs: []int{7, 9}},
+		{Name: "not on a visible tmpfs", Kind: "other", Bytes: 1 << 30},
+	}
+	shm := []procfs.ShmSegment{{ID: 7, UID: 1000, RSS: 2 << 30, CPID: 42}, {ID: 9, UID: 0, RSS: 1 << 30}}
+	got := cmds(Shmem(parts, shm, 1000))
+	want := strings.Join([]string{
+		"du -xah /dev/shm 2>/dev/null | sort -h | tail -20",
+		"sudo du -xah /run/user/1001 2>/dev/null | sort -h | tail -20",
+		"ipcrm -m 7",
+		"sudo ipcrm -m 9",
+		"sudo lsof -n 2>/dev/null | grep 'memfd:' | sort -k7 -n | tail -20",
+	}, "\n")
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
 	}
 }

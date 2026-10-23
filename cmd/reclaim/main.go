@@ -148,6 +148,15 @@ func groupUses(gs []*model.Group) []sysmem.GroupUse {
 	return out
 }
 
+func tmpfsSlice(parts []sysmem.Part) uint64 {
+	for _, p := range parts {
+		if p.Kind == sysmem.PartTmpfs {
+			return p.Bytes
+		}
+	}
+	return 0
+}
+
 func dumpJSON(s *sample.Sampler, view group.View, names group.Names) int {
 	snap, err := s.Sample()
 	if err != nil {
@@ -156,6 +165,7 @@ func dumpJSON(s *sample.Sampler, view group.View, names group.Names) int {
 	}
 	groups := group.Build(view, snap, names)
 	group.Enrich(groups, snap, s.Cgroup)
+	used := sysmem.ExplainUsed(snap.Meminfo, snap.Zram, groupUses(groups), 5)
 	out := map[string]any{
 		"time":      snap.Time,
 		"view":      view.String(),
@@ -165,7 +175,9 @@ func dumpJSON(s *sample.Sampler, view group.View, names group.Names) int {
 		"zram":      snap.Zram,
 		"warnings":  snap.Warnings,
 		"groups":    wrapGroups(groups),
-		"used":      sysmem.ExplainUsed(snap.Meminfo, snap.Zram, groupUses(groups), 5),
+		"used":      used,
+		"shmem":     sysmem.ExplainShmem(tmpfsSlice(used), snap.Tmpfs, snap.Shm),
+		"tmpfs":     snap.Tmpfs,
 		"kernel":    suggest.Kernel(snap.Meminfo, snap.Zram),
 	}
 	enc := json.NewEncoder(os.Stdout)
